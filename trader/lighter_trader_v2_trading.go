@@ -697,19 +697,19 @@ func (t *LighterTraderV2) GetOpenOrders(symbol string) ([]OpenOrder, error) {
 
 	var result []OpenOrder
 	for _, order := range activeOrders {
-		// Convert side: Lighter uses "bid"/"ask", we need "BUY"/"SELL"
+		// Convert side: Lighter uses is_ask (true=sell, false=buy)
 		side := "BUY"
-		if order.Side == "ask" || order.Side == "SELL" || order.Side == "sell" {
+		if order.IsAsk {
 			side = "SELL"
 		}
 
-		// Determine order type
+		// Determine order type from Lighter's type field
 		orderType := "LIMIT"
-		if order.OrderType == "market" {
+		if order.Type == "market" {
 			orderType = "MARKET"
-		} else if order.OrderType == "stop_loss" {
+		} else if order.Type == "stop_loss" || order.Type == "stop" {
 			orderType = "STOP_MARKET"
-		} else if order.OrderType == "take_profit" {
+		} else if order.Type == "take_profit" {
 			orderType = "TAKE_PROFIT_MARKET"
 		}
 
@@ -719,15 +719,23 @@ func (t *LighterTraderV2) GetOpenOrders(symbol string) ([]OpenOrder, error) {
 			positionSide = "SHORT"
 		}
 
+		// Parse price and quantity from string fields
+		price, _ := strconv.ParseFloat(order.Price, 64)
+		quantity, _ := strconv.ParseFloat(order.RemainingBaseAmount, 64)
+		if quantity == 0 {
+			quantity, _ = strconv.ParseFloat(order.InitialBaseAmount, 64)
+		}
+		triggerPrice, _ := strconv.ParseFloat(order.TriggerPrice, 64)
+
 		openOrder := OpenOrder{
 			OrderID:      order.OrderID,
 			Symbol:       symbol,
 			Side:         side,
 			PositionSide: positionSide,
 			Type:         orderType,
-			Price:        order.Price,
-			StopPrice:    order.Price, // For stop orders, price is the trigger price
-			Quantity:     order.Quantity,
+			Price:        price,
+			StopPrice:    triggerPrice,
+			Quantity:     quantity,
 			Status:       "NEW",
 		}
 		result = append(result, openOrder)

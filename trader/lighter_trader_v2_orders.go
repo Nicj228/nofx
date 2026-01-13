@@ -148,7 +148,7 @@ func (t *LighterTraderV2) GetOrderStatus(symbol string, orderID string) (map[str
 		"orderId":     order.OrderID,
 		"status":      unifiedStatus,
 		"avgPrice":    order.Price,
-		"executedQty": order.FilledQty,
+		"executedQty": order.FilledBaseAmount,
 		"commission":  0.0,
 	}, nil
 }
@@ -239,11 +239,11 @@ func (t *LighterTraderV2) GetActiveOrders(symbol string) ([]OrderResponse, error
 
 	logger.Infof("📋 LIGHTER GetActiveOrders raw response: %s", string(body))
 
-	// Parse response
+	// Parse response - Lighter API uses "orders" field, not "data"
 	var apiResp struct {
 		Code    int              `json:"code"`
 		Message string           `json:"message"`
-		Data    []OrderResponse  `json:"data"`
+		Orders  []OrderResponse  `json:"orders"`
 	}
 
 	if err := json.Unmarshal(body, &apiResp); err != nil {
@@ -254,8 +254,8 @@ func (t *LighterTraderV2) GetActiveOrders(symbol string) ([]OrderResponse, error
 		return nil, fmt.Errorf("failed to get active orders (code %d): %s", apiResp.Code, apiResp.Message)
 	}
 
-	logger.Infof("✓ LIGHTER - Retrieved %d active orders", len(apiResp.Data))
-	return apiResp.Data, nil
+	logger.Infof("✓ LIGHTER - Retrieved %d active orders", len(apiResp.Orders))
+	return apiResp.Orders, nil
 }
 
 // CancelOrder Cancel a single order
