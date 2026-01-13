@@ -689,8 +689,52 @@ func pow10(n int) int64 {
 
 // GetOpenOrders gets all open/pending orders for a symbol
 func (t *LighterTraderV2) GetOpenOrders(symbol string) ([]OpenOrder, error) {
-	// TODO: Implement Lighter open orders
-	return []OpenOrder{}, nil
+	// Get active orders from Lighter API
+	activeOrders, err := t.GetActiveOrders(symbol)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get active orders: %w", err)
+	}
+
+	var result []OpenOrder
+	for _, order := range activeOrders {
+		// Convert side: Lighter uses "bid"/"ask", we need "BUY"/"SELL"
+		side := "BUY"
+		if order.Side == "ask" || order.Side == "SELL" || order.Side == "sell" {
+			side = "SELL"
+		}
+
+		// Determine order type
+		orderType := "LIMIT"
+		if order.OrderType == "market" {
+			orderType = "MARKET"
+		} else if order.OrderType == "stop_loss" {
+			orderType = "STOP_MARKET"
+		} else if order.OrderType == "take_profit" {
+			orderType = "TAKE_PROFIT_MARKET"
+		}
+
+		// Determine position side based on order direction
+		positionSide := "LONG"
+		if side == "SELL" {
+			positionSide = "SHORT"
+		}
+
+		openOrder := OpenOrder{
+			OrderID:      order.OrderID,
+			Symbol:       symbol,
+			Side:         side,
+			PositionSide: positionSide,
+			Type:         orderType,
+			Price:        order.Price,
+			StopPrice:    order.Price, // For stop orders, price is the trigger price
+			Quantity:     order.Quantity,
+			Status:       "NEW",
+		}
+		result = append(result, openOrder)
+	}
+
+	logger.Infof("✓ LIGHTER GetOpenOrders: found %d open orders for %s", len(result), symbol)
+	return result, nil
 }
 
 // PlaceLimitOrder implements GridTrader interface for grid trading
