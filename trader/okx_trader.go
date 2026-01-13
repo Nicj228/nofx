@@ -1390,8 +1390,98 @@ func (t *OKXTrader) GetClosedPnL(startTime time.Time, limit int) ([]ClosedPnLRec
 
 // GetOpenOrders gets all open/pending orders for a symbol
 func (t *OKXTrader) GetOpenOrders(symbol string) ([]OpenOrder, error) {
-	// TODO: Implement OKX open orders
-	return []OpenOrder{}, nil
+	instId := t.convertSymbol(symbol)
+	var result []OpenOrder
+
+	// 1. Get pending limit orders
+	path := fmt.Sprintf("%s?instId=%s&instType=SWAP", okxPendingOrdersPath, instId)
+	data, err := t.doRequest("GET", path, nil)
+	if err == nil {
+		var orders []struct {
+			OrdId   string `json:"ordId"`
+			InstId  string `json:"instId"`
+			Side    string `json:"side"`    // buy/sell
+			PosSide string `json:"posSide"` // long/short/net
+			OrdType string `json:"ordType"` // limit/market/post_only
+			Px      string `json:"px"`      // price
+			Sz      string `json:"sz"`      // size
+			State   string `json:"state"`   // live/partially_filled
+		}
+		if err := json.Unmarshal(data, &orders); err == nil {
+			for _, order := range orders {
+				price, _ := strconv.ParseFloat(order.Px, 64)
+				quantity, _ := strconv.ParseFloat(order.Sz, 64)
+
+				// Convert OKX side to standard format
+				side := strings.ToUpper(order.Side)
+				positionSide := strings.ToUpper(order.PosSide)
+				if positionSide == "NET" {
+					positionSide = "BOTH"
+				}
+
+				result = append(result, OpenOrder{
+					OrderID:      order.OrdId,
+					Symbol:       symbol,
+					Side:         side,
+					PositionSide: positionSide,
+					Type:         strings.ToUpper(order.OrdType),
+					Price:        price,
+					StopPrice:    0,
+					Quantity:     quantity,
+					Status:       "NEW",
+				})
+			}
+		}
+	}
+
+	// 2. Get pending algo orders (stop-loss/take-profit)
+	algoPath := fmt.Sprintf("%s?instId=%s&instType=SWAP", okxAlgoPendingPath, instId)
+	algoData, err := t.doRequest("GET", algoPath, nil)
+	if err == nil {
+		var algoOrders []struct {
+			AlgoId      string `json:"algoId"`
+			InstId      string `json:"instId"`
+			Side        string `json:"side"`
+			PosSide     string `json:"posSide"`
+			OrdType     string `json:"ordType"` // conditional/oco/trigger
+			TriggerPx   string `json:"triggerPx"`
+			Sz          string `json:"sz"`
+			State       string `json:"state"`
+		}
+		if err := json.Unmarshal(algoData, &algoOrders); err == nil {
+			for _, order := range algoOrders {
+				triggerPrice, _ := strconv.ParseFloat(order.TriggerPx, 64)
+				quantity, _ := strconv.ParseFloat(order.Sz, 64)
+
+				side := strings.ToUpper(order.Side)
+				positionSide := strings.ToUpper(order.PosSide)
+				if positionSide == "NET" {
+					positionSide = "BOTH"
+				}
+
+				// Map OKX algo order type
+				orderType := "STOP_MARKET"
+				if order.OrdType == "oco" {
+					orderType = "TAKE_PROFIT_MARKET"
+				}
+
+				result = append(result, OpenOrder{
+					OrderID:      order.AlgoId,
+					Symbol:       symbol,
+					Side:         side,
+					PositionSide: positionSide,
+					Type:         orderType,
+					Price:        0,
+					StopPrice:    triggerPrice,
+					Quantity:     quantity,
+					Status:       "NEW",
+				})
+			}
+		}
+	}
+
+	logger.Infof("✓ OKX GetOpenOrders: found %d open orders for %s", len(result), symbol)
+	return result, nil
 }
 
 // PlaceLimitOrder places a limit order for grid trading

@@ -1417,8 +1417,52 @@ func (t *AsterTrader) GetTrades(startTime time.Time, limit int) ([]TradeRecord, 
 
 // GetOpenOrders gets all open/pending orders for a symbol
 func (t *AsterTrader) GetOpenOrders(symbol string) ([]OpenOrder, error) {
-	// TODO: Implement Aster open orders
-	return []OpenOrder{}, nil
+	params := map[string]interface{}{
+		"symbol": symbol,
+	}
+
+	body, err := t.request("GET", "/fapi/v3/openOrders", params)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get open orders: %w", err)
+	}
+
+	var orders []struct {
+		OrderID      int64  `json:"orderId"`
+		Symbol       string `json:"symbol"`
+		Side         string `json:"side"`
+		PositionSide string `json:"positionSide"`
+		Type         string `json:"type"`
+		Price        string `json:"price"`
+		StopPrice    string `json:"stopPrice"`
+		OrigQty      string `json:"origQty"`
+		Status       string `json:"status"`
+	}
+
+	if err := json.Unmarshal(body, &orders); err != nil {
+		return nil, fmt.Errorf("failed to parse open orders: %w", err)
+	}
+
+	var result []OpenOrder
+	for _, order := range orders {
+		price, _ := strconv.ParseFloat(order.Price, 64)
+		stopPrice, _ := strconv.ParseFloat(order.StopPrice, 64)
+		quantity, _ := strconv.ParseFloat(order.OrigQty, 64)
+
+		result = append(result, OpenOrder{
+			OrderID:      fmt.Sprintf("%d", order.OrderID),
+			Symbol:       order.Symbol,
+			Side:         order.Side,
+			PositionSide: order.PositionSide,
+			Type:         order.Type,
+			Price:        price,
+			StopPrice:    stopPrice,
+			Quantity:     quantity,
+			Status:       order.Status,
+		})
+	}
+
+	logger.Infof("✓ ASTER GetOpenOrders: found %d open orders for %s", len(result), symbol)
+	return result, nil
 }
 
 // PlaceLimitOrder places a limit order for grid trading

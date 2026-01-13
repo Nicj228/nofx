@@ -1099,8 +1099,105 @@ func genBitgetClientOid() string {
 
 // GetOpenOrders gets all open/pending orders for a symbol
 func (t *BitgetTrader) GetOpenOrders(symbol string) ([]OpenOrder, error) {
-	// TODO: Implement Bitget open orders
-	return []OpenOrder{}, nil
+	symbol = t.convertSymbol(symbol)
+	var result []OpenOrder
+
+	// 1. Get pending limit orders
+	params := map[string]interface{}{
+		"symbol":      symbol,
+		"productType": "USDT-FUTURES",
+	}
+
+	data, err := t.doRequest("GET", bitgetPendingPath, params)
+	if err == nil {
+		var orders struct {
+			EntrustedList []struct {
+				OrderId      string `json:"orderId"`
+				Symbol       string `json:"symbol"`
+				Side         string `json:"side"`         // buy/sell
+				TradeSide    string `json:"tradeSide"`    // open/close
+				PosSide      string `json:"posSide"`      // long/short
+				OrderType    string `json:"orderType"`    // limit/market
+				Price        string `json:"price"`
+				Size         string `json:"size"`
+				State        string `json:"state"`
+			} `json:"entrustedList"`
+		}
+		if err := json.Unmarshal(data, &orders); err == nil {
+			for _, order := range orders.EntrustedList {
+				price, _ := strconv.ParseFloat(order.Price, 64)
+				quantity, _ := strconv.ParseFloat(order.Size, 64)
+
+				// Convert side to standard format
+				side := strings.ToUpper(order.Side)
+				positionSide := strings.ToUpper(order.PosSide)
+
+				result = append(result, OpenOrder{
+					OrderID:      order.OrderId,
+					Symbol:       symbol,
+					Side:         side,
+					PositionSide: positionSide,
+					Type:         strings.ToUpper(order.OrderType),
+					Price:        price,
+					StopPrice:    0,
+					Quantity:     quantity,
+					Status:       "NEW",
+				})
+			}
+		}
+	}
+
+	// 2. Get pending plan orders (stop-loss/take-profit)
+	planParams := map[string]interface{}{
+		"symbol":      symbol,
+		"productType": "USDT-FUTURES",
+	}
+
+	planData, err := t.doRequest("GET", "/api/v2/mix/order/orders-plan-pending", planParams)
+	if err == nil {
+		var planOrders struct {
+			EntrustedList []struct {
+				OrderId       string `json:"orderId"`
+				Symbol        string `json:"symbol"`
+				Side          string `json:"side"`
+				PosSide       string `json:"posSide"`
+				PlanType      string `json:"planType"` // normal_plan/profit_plan/loss_plan
+				TriggerPrice  string `json:"triggerPrice"`
+				Size          string `json:"size"`
+				State         string `json:"state"`
+			} `json:"entrustedList"`
+		}
+		if err := json.Unmarshal(planData, &planOrders); err == nil {
+			for _, order := range planOrders.EntrustedList {
+				triggerPrice, _ := strconv.ParseFloat(order.TriggerPrice, 64)
+				quantity, _ := strconv.ParseFloat(order.Size, 64)
+
+				side := strings.ToUpper(order.Side)
+				positionSide := strings.ToUpper(order.PosSide)
+
+				// Map Bitget plan type to order type
+				orderType := "STOP_MARKET"
+				if order.PlanType == "profit_plan" {
+					orderType = "TAKE_PROFIT_MARKET"
+				}
+
+				result = append(result, OpenOrder{
+					OrderID:      order.OrderId,
+					Symbol:       symbol,
+					Side:         side,
+					PositionSide: positionSide,
+					Type:         orderType,
+					Price:        0,
+					StopPrice:    triggerPrice,
+					Quantity:     quantity,
+					Status:       "NEW",
+				})
+			}
+		}
+	}
+
+	logger.Infof("✓ BITGET GetOpenOrders: found %d open orders for %s", len(result), symbol)
+	return result, nil
 }
 
 // PlaceLimitOrder places a limit order for grid trading
