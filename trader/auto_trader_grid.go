@@ -156,6 +156,42 @@ func (at *AutoTrader) checkMaxDrawdown() (bool, float64) {
 	return drawdown >= gridConfig.MaxDrawdownPct, drawdown
 }
 
+// checkDailyLossLimit checks if daily loss exceeds limit
+// Returns: (exceeded bool, dailyLossPct float64)
+func (at *AutoTrader) checkDailyLossLimit() (bool, float64) {
+	gridConfig := at.config.StrategyConfig.GridConfig
+	if gridConfig.DailyLossLimitPct <= 0 {
+		return false, 0
+	}
+
+	at.gridState.mu.Lock()
+	// Reset daily PnL if new day
+	now := time.Now()
+	if now.YearDay() != at.gridState.LastDailyReset.YearDay() ||
+		now.Year() != at.gridState.LastDailyReset.Year() {
+		at.gridState.DailyPnL = 0
+		at.gridState.LastDailyReset = now
+	}
+	dailyPnL := at.gridState.DailyPnL
+	at.gridState.mu.Unlock()
+
+	// Calculate daily loss as percentage of total investment
+	dailyLossPct := 0.0
+	if gridConfig.TotalInvestment > 0 && dailyPnL < 0 {
+		dailyLossPct = (-dailyPnL) / gridConfig.TotalInvestment * 100
+	}
+
+	return dailyLossPct >= gridConfig.DailyLossLimitPct, dailyLossPct
+}
+
+// updateDailyPnL updates the daily PnL tracking
+func (at *AutoTrader) updateDailyPnL(realizedPnL float64) {
+	at.gridState.mu.Lock()
+	at.gridState.DailyPnL += realizedPnL
+	at.gridState.TotalProfit += realizedPnL
+	at.gridState.mu.Unlock()
+}
+
 // emergencyExit closes all positions and cancels all orders
 func (at *AutoTrader) emergencyExit(reason string) error {
 	gridConfig := at.config.StrategyConfig.GridConfig
@@ -374,6 +410,16 @@ func (at *AutoTrader) RunGridCycle() error {
 	exceeded, drawdown := at.checkMaxDrawdown()
 	if exceeded {
 		return at.emergencyExit(fmt.Sprintf("max drawdown exceeded: %.2f%%", drawdown))
+	}
+
+	// CRITICAL: Check daily loss limit
+	dailyExceeded, dailyLossPct := at.checkDailyLossLimit()
+	if dailyExceeded {
+		logger.Errorf("[Grid] Daily loss limit exceeded: %.2f%%", dailyLossPct)
+		at.gridState.mu.Lock()
+		at.gridState.IsPaused = true
+		at.gridState.mu.Unlock()
+		return fmt.Errorf("daily loss limit exceeded: %.2f%%", dailyLossPct)
 	}
 
 	// Check if grid is paused
