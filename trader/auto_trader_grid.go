@@ -330,6 +330,48 @@ func (at *AutoTrader) executeGridDecision(d *kernel.Decision) error {
 	}
 }
 
+// checkTotalPositionLimit checks if adding a new position would exceed total limits
+// Returns: (allowed bool, currentPositionValue float64, maxAllowed float64)
+func (at *AutoTrader) checkTotalPositionLimit(symbol string, additionalValue float64) (bool, float64, float64) {
+	gridConfig := at.config.StrategyConfig.GridConfig
+
+	// Calculate max allowed total position value
+	// Total position should not exceed: TotalInvestment × Leverage
+	maxTotalPositionValue := gridConfig.TotalInvestment * float64(gridConfig.Leverage)
+
+	// Get current position value from exchange
+	currentPositionValue := 0.0
+	positions, err := at.trader.GetPositions()
+	if err == nil {
+		for _, pos := range positions {
+			if sym, ok := pos["symbol"].(string); ok && sym == symbol {
+				if size, ok := pos["positionAmt"].(float64); ok {
+					if price, ok := pos["markPrice"].(float64); ok {
+						currentPositionValue = math.Abs(size) * price
+					} else if entryPrice, ok := pos["entryPrice"].(float64); ok {
+						currentPositionValue = math.Abs(size) * entryPrice
+					}
+				}
+			}
+		}
+	}
+
+	// Also count pending orders as potential position
+	at.gridState.mu.RLock()
+	pendingValue := 0.0
+	for _, level := range at.gridState.Levels {
+		if level.State == "pending" {
+			pendingValue += level.OrderQuantity * level.Price
+		}
+	}
+	at.gridState.mu.RUnlock()
+
+	totalAfterOrder := currentPositionValue + pendingValue + additionalValue
+	allowed := totalAfterOrder <= maxTotalPositionValue
+
+	return allowed, currentPositionValue + pendingValue, maxTotalPositionValue
+}
+
 // placeGridLimitOrder places a limit order for grid trading
 func (at *AutoTrader) placeGridLimitOrder(d *kernel.Decision, side string) error {
 	// Check if trader supports GridTrader interface
@@ -379,10 +421,19 @@ func (at *AutoTrader) placeGridLimitOrder(d *kernel.Decision, side string) error
 		positionValue := quantity * d.Price
 		absoluteMaxValue := gridConfig.TotalInvestment * float64(gridConfig.Leverage) * 2 // 2x safety margin
 		if positionValue > absoluteMaxValue {
-			logger.Errorf("[Grid] 🚫 CRITICAL: Position value $%.2f exceeds absolute max $%.2f! Rejecting order.",
+			logger.Errorf("[Grid] CRITICAL: Position value $%.2f exceeds absolute max $%.2f! Rejecting order.",
 				positionValue, absoluteMaxValue)
 			return fmt.Errorf("position value $%.2f exceeds safety limit $%.2f", positionValue, absoluteMaxValue)
 		}
+	}
+
+	// CRITICAL: Check total position limit before placing order
+	orderValue := quantity * d.Price
+	allowed, currentValue, maxValue := at.checkTotalPositionLimit(d.Symbol, orderValue)
+	if !allowed {
+		logger.Errorf("[Grid] TOTAL POSITION LIMIT EXCEEDED: current=$%.2f + order=$%.2f > max=$%.2f. Rejecting order.",
+			currentValue, orderValue, maxValue)
+		return fmt.Errorf("total position value $%.2f would exceed limit $%.2f", currentValue+orderValue, maxValue)
 	}
 
 	req := &LimitOrderRequest{
