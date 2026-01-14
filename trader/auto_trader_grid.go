@@ -998,10 +998,151 @@ func (at *AutoTrader) autoAdjustGrid() {
 		return // Price still near center, don't adjust
 	}
 
-	// Cancel existing orders and reinitialize
 	logger.Infof("[Grid] Adjusting grid around new price $%.2f", currentPrice)
-	at.cancelAllGridOrders()
-	at.initializeGridLevels(currentPrice, gridConfig)
+
+	// Cancel existing orders first (before taking the lock for state modification)
+	if err := at.cancelAllGridOrders(); err != nil {
+		logger.Errorf("[Grid] Failed to cancel orders during auto-adjust: %v", err)
+		// Continue with adjustment anyway
+	}
+
+	// CRITICAL FIX: Hold lock for the entire adjustment operation to ensure atomicity
+	at.gridState.mu.Lock()
+	defer at.gridState.mu.Unlock()
+
+	// Preserve filled positions before reinitializing
+	filledPositions := make(map[int]kernel.GridLevelInfo)
+	for i, level := range at.gridState.Levels {
+		if level.State == "filled" {
+			filledPositions[i] = level
+		}
+	}
+
+	// CRITICAL FIX: Recalculate grid bounds centered on current price
+	// Use the same logic as InitializeGrid() - either ATR-based or default percentage
+	if gridConfig.UseATRBounds {
+		// Try to get ATR for bound calculation
+		mktData, err := market.GetWithTimeframes(gridConfig.Symbol, []string{"4h"}, "4h", 20)
+		if err != nil {
+			logger.Warnf("[Grid] Failed to get market data for ATR during adjust: %v, using default bounds", err)
+			at.calculateDefaultBoundsLocked(currentPrice, gridConfig)
+		} else {
+			at.calculateATRBoundsLocked(currentPrice, mktData, gridConfig)
+		}
+	} else {
+		// Use default bounds calculation (scaled by grid count)
+		at.calculateDefaultBoundsLocked(currentPrice, gridConfig)
+	}
+
+	// Recalculate grid spacing based on new bounds
+	at.gridState.GridSpacing = (at.gridState.UpperPrice - at.gridState.LowerPrice) / float64(gridConfig.GridCount-1)
+
+	logger.Infof("[Grid] New bounds: $%.2f - $%.2f, spacing: $%.2f",
+		at.gridState.LowerPrice, at.gridState.UpperPrice, at.gridState.GridSpacing)
+
+	// Initialize new grid levels (without lock since we already hold it)
+	at.initializeGridLevelsLocked(currentPrice, gridConfig)
+
+	// CRITICAL FIX: Restore filled positions - find closest new level for each filled position
+	for _, filledLevel := range filledPositions {
+		closestIdx := -1
+		closestDist := math.MaxFloat64
+
+		for i, newLevel := range at.gridState.Levels {
+			dist := math.Abs(newLevel.Price - filledLevel.PositionEntry)
+			if dist < closestDist {
+				closestDist = dist
+				closestIdx = i
+			}
+		}
+
+		if closestIdx >= 0 {
+			// Restore the filled state to the closest level
+			at.gridState.Levels[closestIdx].State = "filled"
+			at.gridState.Levels[closestIdx].PositionEntry = filledLevel.PositionEntry
+			at.gridState.Levels[closestIdx].PositionSize = filledLevel.PositionSize
+			at.gridState.Levels[closestIdx].UnrealizedPnL = filledLevel.UnrealizedPnL
+			at.gridState.Levels[closestIdx].OrderID = filledLevel.OrderID
+			at.gridState.Levels[closestIdx].OrderQuantity = filledLevel.OrderQuantity
+			logger.Infof("[Grid] Restored filled position at level %d (entry $%.2f)", closestIdx, filledLevel.PositionEntry)
+		}
+	}
+}
+
+// calculateDefaultBoundsLocked calculates default bounds (caller must hold lock)
+func (at *AutoTrader) calculateDefaultBoundsLocked(price float64, config *store.GridStrategyConfig) {
+	// Default: ±3% from current price, scaled by grid count
+	multiplier := 0.03 * float64(config.GridCount) / 10
+	at.gridState.UpperPrice = price * (1 + multiplier)
+	at.gridState.LowerPrice = price * (1 - multiplier)
+}
+
+// calculateATRBoundsLocked calculates bounds using ATR (caller must hold lock)
+func (at *AutoTrader) calculateATRBoundsLocked(price float64, mktData *market.Data, config *store.GridStrategyConfig) {
+	atr := 0.0
+	if mktData.LongerTermContext != nil {
+		atr = mktData.LongerTermContext.ATR14
+	}
+
+	if atr <= 0 {
+		at.calculateDefaultBoundsLocked(price, config)
+		return
+	}
+
+	multiplier := config.ATRMultiplier
+	if multiplier <= 0 {
+		multiplier = 2.0
+	}
+
+	halfRange := atr * multiplier
+	at.gridState.UpperPrice = price + halfRange
+	at.gridState.LowerPrice = price - halfRange
+}
+
+// initializeGridLevelsLocked creates the grid level structure (caller must hold lock)
+func (at *AutoTrader) initializeGridLevelsLocked(currentPrice float64, config *store.GridStrategyConfig) {
+	levels := make([]kernel.GridLevelInfo, config.GridCount)
+	totalWeight := 0.0
+	weights := make([]float64, config.GridCount)
+
+	// Calculate weights based on distribution
+	for i := 0; i < config.GridCount; i++ {
+		switch config.Distribution {
+		case "gaussian":
+			// Gaussian distribution - more weight in the middle
+			center := float64(config.GridCount-1) / 2
+			sigma := float64(config.GridCount) / 4
+			weights[i] = math.Exp(-math.Pow(float64(i)-center, 2) / (2 * sigma * sigma))
+		case "pyramid":
+			// Pyramid - more weight at bottom
+			weights[i] = float64(config.GridCount - i)
+		default: // uniform
+			weights[i] = 1.0
+		}
+		totalWeight += weights[i]
+	}
+
+	// Create levels
+	for i := 0; i < config.GridCount; i++ {
+		price := at.gridState.LowerPrice + float64(i)*at.gridState.GridSpacing
+		allocatedUSD := config.TotalInvestment * weights[i] / totalWeight
+
+		// Determine initial side (below current price = buy, above = sell)
+		side := "buy"
+		if price > currentPrice {
+			side = "sell"
+		}
+
+		levels[i] = kernel.GridLevelInfo{
+			Index:        i,
+			Price:        price,
+			State:        "empty",
+			Side:         side,
+			AllocatedUSD: allocatedUSD,
+		}
+	}
+
+	at.gridState.Levels = levels
 }
 
 // checkAndExecuteStopLoss checks if any filled level has exceeded stop loss and closes it
