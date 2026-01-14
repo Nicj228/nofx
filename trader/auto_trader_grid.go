@@ -811,55 +811,60 @@ func (at *AutoTrader) syncGridState() {
 		activeOrderIDs[order.OrderID] = true
 	}
 
+	// Get current positions to verify fills
+	positions, err := at.trader.GetPositions()
+	currentPositionSize := 0.0
+	if err == nil {
+		for _, pos := range positions {
+			if sym, ok := pos["symbol"].(string); ok && sym == gridConfig.Symbol {
+				if size, ok := pos["positionAmt"].(float64); ok {
+					currentPositionSize = size
+				}
+			}
+		}
+	}
+
 	// Update levels based on order status
 	at.gridState.mu.Lock()
+	previousFilledCount := 0
+	for _, level := range at.gridState.Levels {
+		if level.State == "filled" {
+			previousFilledCount++
+		}
+	}
+
 	for i := range at.gridState.Levels {
 		level := &at.gridState.Levels[i]
 		if level.State == "pending" && level.OrderID != "" {
 			if !activeOrderIDs[level.OrderID] {
-				// Order no longer exists - might be filled or cancelled
-				// Mark as filled (we'll need to verify with position data)
-				level.State = "filled"
-				level.PositionEntry = level.Price
-				at.gridState.TotalTrades++
-				logger.Infof("[Grid] Level %d order filled at $%.2f", i, level.Price)
+				// Order no longer exists - check if position changed to determine fill vs cancel
+				// This is a heuristic - ideally we'd query order history
+				if math.Abs(currentPositionSize) > math.Abs(float64(previousFilledCount)*level.OrderQuantity) {
+					// Position increased, likely filled
+					level.State = "filled"
+					level.PositionEntry = level.Price
+					level.PositionSize = level.OrderQuantity
+					at.gridState.TotalTrades++
+					logger.Infof("[Grid] Level %d order filled at $%.2f", i, level.Price)
+				} else {
+					// Position didn't increase as expected, likely cancelled
+					level.State = "empty"
+					level.OrderID = ""
+					level.OrderQuantity = 0
+					logger.Infof("[Grid] Level %d order cancelled/expired", i)
+				}
+				delete(at.gridState.OrderBook, level.OrderID)
 			}
 		}
 	}
 	at.gridState.mu.Unlock()
 
-	// Update position info
-	positions, err := at.trader.GetPositions()
-	if err != nil {
-		return
-	}
+	logger.Debugf("[Grid] Synced state: position=%.4f, orders=%d", currentPositionSize, len(openOrders))
 
-	var totalPosition float64
-	for _, pos := range positions {
-		if sym, ok := pos["symbol"].(string); ok && sym == gridConfig.Symbol {
-			if size, ok := pos["positionAmt"].(float64); ok {
-				totalPosition = size
-			}
-			if pnl, ok := pos["unRealizedProfit"].(float64); ok {
-				// Update unrealized PnL for filled levels
-				at.gridState.mu.Lock()
-				for i := range at.gridState.Levels {
-					if at.gridState.Levels[i].State == "filled" {
-						// Distribute PnL (simplified - in production, track per-level)
-						at.gridState.Levels[i].UnrealizedPnL = pnl / float64(at.gridState.TotalTrades)
-					}
-				}
-				at.gridState.mu.Unlock()
-			}
-		}
-	}
-
-	logger.Debugf("[Grid] Synced state: position=%.4f, orders=%d", totalPosition, len(openOrders))
-
-	// CRITICAL: Check stop loss for filled levels
+	// Check stop loss
 	at.checkAndExecuteStopLoss()
 
-	// Check grid skew and auto-adjust if needed
+	// Check grid skew
 	at.autoAdjustGrid()
 }
 
