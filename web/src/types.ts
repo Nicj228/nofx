@@ -786,3 +786,36 @@ export interface PositionHistoryResponse {
   symbol_stats: SymbolStats[];
   direction_stats: DirectionStats[];
 }
+
+// Grid Risk Information for frontend display
+export interface GridRiskInfo {
+  // Leverage info
+  current_leverage: number
+  effective_leverage: number
+  recommended_leverage: number
+
+  // Position info
+  current_position: number
+  max_position: number
+  position_percent: number
+
+  // Liquidation info
+  liquidation_price: number
+  liquidation_distance: number
+
+  // Market state
+  regime_level: string
+
+  // Box state
+  short_box_upper: number
+  short_box_lower: number
+  mid_box_upper: number
+  mid_box_lower: number
+  long_box_upper: number
+  long_box_lower: number
+  current_price: number
+
+  // Breakout state
+  breakout_level: string
+  breakout_direction: string
+}

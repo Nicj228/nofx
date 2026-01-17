@@ -1345,6 +1345,150 @@ func (at *AutoTrader) initializeGridLevelsLocked(currentPrice float64, config *s
 	at.gridState.Levels = levels
 }
 
+// GridRiskInfo contains risk information for frontend display
+type GridRiskInfo struct {
+	CurrentLeverage     int     `json:"current_leverage"`
+	EffectiveLeverage   float64 `json:"effective_leverage"`
+	RecommendedLeverage int     `json:"recommended_leverage"`
+
+	CurrentPosition float64 `json:"current_position"`
+	MaxPosition     float64 `json:"max_position"`
+	PositionPercent float64 `json:"position_percent"`
+
+	LiquidationPrice    float64 `json:"liquidation_price"`
+	LiquidationDistance float64 `json:"liquidation_distance"`
+
+	RegimeLevel string `json:"regime_level"`
+
+	ShortBoxUpper float64 `json:"short_box_upper"`
+	ShortBoxLower float64 `json:"short_box_lower"`
+	MidBoxUpper   float64 `json:"mid_box_upper"`
+	MidBoxLower   float64 `json:"mid_box_lower"`
+	LongBoxUpper  float64 `json:"long_box_upper"`
+	LongBoxLower  float64 `json:"long_box_lower"`
+	CurrentPrice  float64 `json:"current_price"`
+
+	BreakoutLevel     string `json:"breakout_level"`
+	BreakoutDirection string `json:"breakout_direction"`
+}
+
+// GetGridRiskInfo returns current risk information for frontend display
+func (at *AutoTrader) GetGridRiskInfo() *GridRiskInfo {
+	gridConfig := at.config.StrategyConfig.GridConfig
+	if gridConfig == nil {
+		return &GridRiskInfo{}
+	}
+
+	at.gridState.mu.RLock()
+	defer at.gridState.mu.RUnlock()
+
+	// Get current price
+	currentPrice, _ := at.trader.GetMarketPrice(gridConfig.Symbol)
+
+	// Calculate effective leverage
+	totalInvestment := gridConfig.TotalInvestment
+	leverage := gridConfig.Leverage
+
+	// Get current position value
+	positions, _ := at.trader.GetPositions()
+	var currentPositionValue float64
+	var currentPositionSize float64
+	for _, pos := range positions {
+		if sym, _ := pos["symbol"].(string); sym == gridConfig.Symbol {
+			size, _ := pos["positionAmt"].(float64)
+			entry, _ := pos["entryPrice"].(float64)
+			currentPositionValue = math.Abs(size * entry)
+			currentPositionSize = size
+			break
+		}
+	}
+
+	effectiveLeverage := 0.0
+	if totalInvestment > 0 {
+		effectiveLeverage = currentPositionValue / totalInvestment
+	}
+
+	// Calculate max position based on regime
+	regimeLevel := market.RegimeLevel(at.gridState.CurrentRegimeLevel)
+	if regimeLevel == "" {
+		regimeLevel = market.RegimeLevelStandard
+	}
+
+	// Use default position limit since GridStrategyConfig doesn't have regime-specific limits
+	// Default is 70% for standard regime
+	maxPositionPct := 70.0
+	switch regimeLevel {
+	case market.RegimeLevelNarrow:
+		maxPositionPct = 40.0
+	case market.RegimeLevelStandard:
+		maxPositionPct = 70.0
+	case market.RegimeLevelWide:
+		maxPositionPct = 60.0
+	case market.RegimeLevelVolatile:
+		maxPositionPct = 40.0
+	}
+
+	maxPosition := totalInvestment * maxPositionPct / 100 * float64(leverage)
+
+	// Use default leverage limits since GridStrategyConfig doesn't have regime-specific limits
+	recommendedLeverage := leverage
+	switch regimeLevel {
+	case market.RegimeLevelNarrow:
+		recommendedLeverage = min(leverage, 2)
+	case market.RegimeLevelStandard:
+		recommendedLeverage = min(leverage, 4)
+	case market.RegimeLevelWide:
+		recommendedLeverage = min(leverage, 3)
+	case market.RegimeLevelVolatile:
+		recommendedLeverage = min(leverage, 2)
+	}
+
+	// Calculate liquidation distance
+	liquidationDistance := 100.0 / float64(leverage) * 0.9 // ~90% of theoretical max
+
+	var liquidationPrice float64
+	if currentPositionSize != 0 && currentPrice > 0 {
+		if currentPositionSize > 0 {
+			// Long position: liquidation below entry
+			liquidationPrice = currentPrice * (1 - liquidationDistance/100)
+		} else {
+			// Short position: liquidation above entry
+			liquidationPrice = currentPrice * (1 + liquidationDistance/100)
+		}
+	}
+
+	positionPercent := 0.0
+	if maxPosition > 0 {
+		positionPercent = currentPositionValue / maxPosition * 100
+	}
+
+	return &GridRiskInfo{
+		CurrentLeverage:     leverage,
+		EffectiveLeverage:   effectiveLeverage,
+		RecommendedLeverage: recommendedLeverage,
+
+		CurrentPosition: currentPositionValue,
+		MaxPosition:     maxPosition,
+		PositionPercent: positionPercent,
+
+		LiquidationPrice:    liquidationPrice,
+		LiquidationDistance: liquidationDistance,
+
+		RegimeLevel: string(regimeLevel),
+
+		ShortBoxUpper: at.gridState.ShortBoxUpper,
+		ShortBoxLower: at.gridState.ShortBoxLower,
+		MidBoxUpper:   at.gridState.MidBoxUpper,
+		MidBoxLower:   at.gridState.MidBoxLower,
+		LongBoxUpper:  at.gridState.LongBoxUpper,
+		LongBoxLower:  at.gridState.LongBoxLower,
+		CurrentPrice:  currentPrice,
+
+		BreakoutLevel:     at.gridState.BreakoutLevel,
+		BreakoutDirection: at.gridState.BreakoutDirection,
+	}
+}
+
 // checkAndExecuteStopLoss checks if any filled level has exceeded stop loss and closes it
 func (at *AutoTrader) checkAndExecuteStopLoss() {
 	gridConfig := at.config.StrategyConfig.GridConfig
