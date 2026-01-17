@@ -537,3 +537,21 @@ func TestCalculateDonchian_PartialPeriod(t *testing.T) {
 		t.Errorf("Expected lower = 88, got %v", lower)
 	}
 }
+
+func TestCalculateDonchian_InvalidPeriod(t *testing.T) {
+	klines := []Kline{
+		{High: 100, Low: 90},
+	}
+
+	// Zero period should return (0, 0)
+	upper, lower := ExportCalculateDonchian(klines, 0)
+	if upper != 0 || lower != 0 {
+		t.Errorf("Expected (0, 0) for zero period, got (%v, %v)", upper, lower)
+	}
+
+	// Negative period should return (0, 0)
+	upper, lower = ExportCalculateDonchian(klines, -1)
+	if upper != 0 || lower != 0 {
+		t.Errorf("Expected (0, 0) for negative period, got (%v, %v)", upper, lower)
+	}
+}

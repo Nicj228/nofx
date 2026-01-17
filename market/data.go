@@ -1213,7 +1213,7 @@ func ExportCalculateBOLL(klines []Kline, period int, multiplier float64) (upper,
 
 // calculateDonchian calculates Donchian channel (highest high, lowest low) for given period
 func calculateDonchian(klines []Kline, period int) (upper, lower float64) {
-	if len(klines) == 0 {
+	if len(klines) == 0 || period <= 0 {
 		return 0, 0
 	}
 
