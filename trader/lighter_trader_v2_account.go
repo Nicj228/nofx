@@ -11,6 +11,7 @@ import (
 )
 
 // getFullAccountInfo Fetch full account info from Lighter API (includes balance and positions)
+// Supports both main accounts and sub-accounts
 func (t *LighterTraderV2) getFullAccountInfo() (*AccountInfo, error) {
 	endpoint := fmt.Sprintf("%s/api/v1/account?by=l1_address&value=%s", t.baseURL, t.walletAddr)
 
@@ -34,20 +35,47 @@ func (t *LighterTraderV2) getFullAccountInfo() (*AccountInfo, error) {
 		return nil, fmt.Errorf("failed to get account (status %d): %s", resp.StatusCode, string(body))
 	}
 
-	// Parse response - Lighter returns {"accounts": [...]}
+	// Parse response - Lighter may return accounts in "accounts" or "sub_accounts" field
 	var accountResp AccountResponse
 	if err := json.Unmarshal(body, &accountResp); err != nil {
 		return nil, fmt.Errorf("failed to parse account response: %w", err)
 	}
 
-	if len(accountResp.Accounts) == 0 {
-		return nil, fmt.Errorf("no account found for wallet address: %s", t.walletAddr)
+	// Check for API error code
+	if accountResp.Code != 0 && accountResp.Code != 200 {
+		return nil, fmt.Errorf("Lighter API error (code %d): %s", accountResp.Code, accountResp.Message)
 	}
 
-	account := &accountResp.Accounts[0]
-	// Use index field if account_index is 0
-	if account.AccountIndex == 0 && account.Index != 0 {
-		account.AccountIndex = account.Index
+	// Combine both accounts and sub_accounts - some users have sub-accounts
+	var allAccounts []AccountInfo
+	allAccounts = append(allAccounts, accountResp.Accounts...)
+	allAccounts = append(allAccounts, accountResp.SubAccounts...)
+
+	if len(allAccounts) == 0 {
+		return nil, fmt.Errorf("no account found for wallet address: %s (try depositing funds first at app.lighter.xyz)", t.walletAddr)
+	}
+
+	// Find the account that matches our stored accountIndex, or use the first one
+	var account *AccountInfo
+	for i := range allAccounts {
+		acc := &allAccounts[i]
+		// Use index field if account_index is 0
+		if acc.AccountIndex == 0 && acc.Index != 0 {
+			acc.AccountIndex = acc.Index
+		}
+		// Match by stored accountIndex if we have one
+		if t.accountIndex != 0 && acc.AccountIndex == t.accountIndex {
+			account = acc
+			break
+		}
+	}
+
+	// If no specific match, use the first account
+	if account == nil {
+		account = &allAccounts[0]
+		if account.AccountIndex == 0 && account.Index != 0 {
+			account.AccountIndex = account.Index
+		}
 	}
 
 	return account, nil
