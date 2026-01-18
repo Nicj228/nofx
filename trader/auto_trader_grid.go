@@ -574,6 +574,15 @@ func (at *AutoTrader) initializeGridLevels(currentPrice float64, config *store.G
 
 // RunGridCycle executes one grid trading cycle
 func (at *AutoTrader) RunGridCycle() error {
+	// Check if trader is stopped (early exit to prevent trades after Stop() is called)
+	at.isRunningMutex.RLock()
+	running := at.isRunning
+	at.isRunningMutex.RUnlock()
+	if !running {
+		logger.Infof("[Grid] Trader is stopped, aborting grid cycle")
+		return nil
+	}
+
 	if at.gridState == nil || !at.gridState.IsInitialized {
 		if err := at.InitializeGrid(); err != nil {
 			return fmt.Errorf("failed to initialize grid: %w", err)
@@ -641,8 +650,26 @@ func (at *AutoTrader) RunGridCycle() error {
 		return fmt.Errorf("failed to get grid decisions: %w", err)
 	}
 
+	// Check if trader is stopped before executing any decisions (prevent trades after Stop())
+	at.isRunningMutex.RLock()
+	running = at.isRunning
+	at.isRunningMutex.RUnlock()
+	if !running {
+		logger.Infof("[Grid] Trader stopped before decision execution, aborting grid cycle")
+		return nil
+	}
+
 	// Execute decisions
 	for _, d := range decision.Decisions {
+		// Check if trader is still running before each decision
+		at.isRunningMutex.RLock()
+		running := at.isRunning
+		at.isRunningMutex.RUnlock()
+		if !running {
+			logger.Infof("[Grid] Trader stopped, skipping remaining %d decisions", len(decision.Decisions))
+			break
+		}
+
 		if err := at.executeGridDecision(&d); err != nil {
 			logger.Warnf("[Grid] Failed to execute decision %s: %v", d.Action, err)
 		}
