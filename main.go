@@ -2,6 +2,7 @@ package main
 
 import (
 	"nofx/api"
+	"nofx/assistant"
 	"nofx/auth"
 	"nofx/backtest"
 	"nofx/config"
@@ -11,6 +12,7 @@ import (
 	"nofx/manager"
 	"nofx/mcp"
 	"nofx/store"
+	"nofx/telegram"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -136,6 +138,41 @@ func main() {
 		}
 	}()
 
+	// Initialize and start Telegram bot (if configured)
+	var telegramBot *telegram.Bot
+	telegramConfig := telegram.LoadConfigFromEnv()
+	if telegramConfig.Token != "" {
+		logger.Info("🤖 Initializing Telegram AI Assistant...")
+
+		// Create AI client for the assistant
+		aiClient := createAssistantAIClient()
+
+		// Create AI Agent with trading tools
+		agentConfig := assistant.DefaultAgentConfig()
+		agent := assistant.NewAgent(aiClient, agentConfig)
+
+		// Register trading tools
+		tradingTools := assistant.NewTradingTools(traderManager, st)
+		agent.RegisterTools(tradingTools.GetAllTools()...)
+
+		// Set system prompt based on language
+		if telegramConfig.DefaultLanguage == "zh" {
+			agent.SetSystemPrompt(assistant.ChineseSystemPrompt())
+		}
+
+		// Create and start Telegram bot
+		var err error
+		telegramBot, err = telegram.NewBot(telegramConfig, agent)
+		if err != nil {
+			logger.Errorf("❌ Failed to create Telegram bot: %v", err)
+		} else {
+			go telegramBot.Start()
+			logger.Info("✅ Telegram AI Assistant started successfully")
+		}
+	} else {
+		logger.Info("ℹ️ Telegram bot not configured (set TELEGRAM_BOT_TOKEN to enable)")
+	}
+
 	// Wait for interrupt signal
 	quit := make(chan os.Signal, 1)
 	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
@@ -145,6 +182,11 @@ func main() {
 
 	<-quit
 	logger.Info("📴 Shutdown signal received, closing system...")
+
+	// Stop Telegram bot
+	if telegramBot != nil {
+		telegramBot.Stop()
+	}
 
 	// Stop all traders
 	traderManager.StopAll()
@@ -159,6 +201,55 @@ func newSharedMCPClient() mcp.AIClient {
 		return nil
 	}
 	return mcp.NewDeepSeekClient()
+}
+
+// createAssistantAIClient creates an AI client for the Telegram assistant
+// Supports multiple providers based on environment configuration
+func createAssistantAIClient() mcp.AIClient {
+	// Try different providers in order of preference
+	
+	// 1. DeepSeek (cost-effective, recommended)
+	if apiKey := os.Getenv("DEEPSEEK_API_KEY"); apiKey != "" {
+		client := mcp.NewDeepSeekClient()
+		customURL := os.Getenv("DEEPSEEK_API_URL")
+		customModel := os.Getenv("DEEPSEEK_MODEL")
+		client.SetAPIKey(apiKey, customURL, customModel)
+		logger.Info("🧠 Assistant using DeepSeek AI")
+		return client
+	}
+
+	// 2. Claude
+	if apiKey := os.Getenv("CLAUDE_API_KEY"); apiKey != "" {
+		client := mcp.NewClaudeClient()
+		customURL := os.Getenv("CLAUDE_API_URL")
+		customModel := os.Getenv("CLAUDE_MODEL")
+		client.SetAPIKey(apiKey, customURL, customModel)
+		logger.Info("🧠 Assistant using Claude AI")
+		return client
+	}
+
+	// 3. OpenAI
+	if apiKey := os.Getenv("OPENAI_API_KEY"); apiKey != "" {
+		client := mcp.NewOpenAIClient()
+		customURL := os.Getenv("OPENAI_API_URL")
+		customModel := os.Getenv("OPENAI_MODEL")
+		client.SetAPIKey(apiKey, customURL, customModel)
+		logger.Info("🧠 Assistant using OpenAI")
+		return client
+	}
+
+	// 4. Qwen
+	if apiKey := os.Getenv("QWEN_API_KEY"); apiKey != "" {
+		client := mcp.NewQwenClient()
+		customURL := os.Getenv("QWEN_API_URL")
+		customModel := os.Getenv("QWEN_MODEL")
+		client.SetAPIKey(apiKey, customURL, customModel)
+		logger.Info("🧠 Assistant using Qwen AI")
+		return client
+	}
+
+	logger.Warn("⚠️ No AI API key configured for assistant")
+	return nil
 }
 
 // initInstallationID initializes the anonymous installation ID for experience improvement
