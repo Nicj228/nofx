@@ -408,6 +408,25 @@ func (b *Bot) AddAllowedUser(userID int64) {
 	b.allowedUsers[userID] = true
 }
 
+// BroadcastAlert sends an alert to all admin users
+func (b *Bot) BroadcastAlert(message string) {
+	for _, adminID := range b.config.AdminUserIDs {
+		chat := &tele.Chat{ID: adminID}
+		_, err := b.bot.Send(chat, "🚨 "+message)
+		if err != nil {
+			logger.Errorf("Failed to send alert to admin %d: %v", adminID, err)
+		}
+	}
+	
+	// If no admins configured, send to allowed users
+	if len(b.config.AdminUserIDs) == 0 {
+		for userID := range b.allowedUsers {
+			chat := &tele.Chat{ID: userID}
+			_, _ = b.bot.Send(chat, "🚨 "+message)
+		}
+	}
+}
+
 // RemoveAllowedUser removes a user from the allowlist
 func (b *Bot) RemoveAllowedUser(userID int64) {
 	b.allowedUsersLock.Lock()

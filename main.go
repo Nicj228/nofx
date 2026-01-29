@@ -142,32 +142,39 @@ func main() {
 	var telegramBot *telegram.Bot
 	telegramConfig := telegram.LoadConfigFromEnv()
 	if telegramConfig.Token != "" {
-		logger.Info("🤖 Initializing Telegram AI Assistant...")
+		logger.Info("🤖 Initializing Smart Trading Assistant...")
 
 		// Create AI client for the assistant
 		aiClient := createAssistantAIClient()
-
-		// Create AI Agent with trading tools
-		agentConfig := assistant.DefaultAgentConfig()
-		agent := assistant.NewAgent(aiClient, agentConfig)
-
-		// Register trading tools
-		tradingTools := assistant.NewTradingTools(traderManager, st)
-		agent.RegisterTools(tradingTools.GetAllTools()...)
-
-		// Set system prompt based on language
-		if telegramConfig.DefaultLanguage == "zh" {
-			agent.SetSystemPrompt(assistant.ChineseSystemPrompt())
-		}
-
-		// Create and start Telegram bot
-		var err error
-		telegramBot, err = telegram.NewBot(telegramConfig, agent)
-		if err != nil {
-			logger.Errorf("❌ Failed to create Telegram bot: %v", err)
+		if aiClient == nil {
+			logger.Error("❌ No AI API key configured, Telegram bot disabled")
 		} else {
-			go telegramBot.Start()
-			logger.Info("✅ Telegram AI Assistant started successfully")
+			// Create Smart AI Agent with trading context awareness
+			agentConfig := assistant.DefaultAgentConfig()
+			smartAgent := assistant.NewSmartAgent(aiClient, agentConfig, traderManager, st)
+
+			// Register trading tools
+			tradingTools := assistant.NewTradingTools(traderManager, st)
+			smartAgent.RegisterTools(tradingTools.GetAllTools()...)
+
+			// Create and start Telegram bot
+			var err error
+			telegramBot, err = telegram.NewBot(telegramConfig, smartAgent.Agent)
+			if err != nil {
+				logger.Errorf("❌ Failed to create Telegram bot: %v", err)
+			} else {
+				// Start background monitor with alert forwarding to Telegram
+				smartAgent.OnAlert(func(alert assistant.Alert) {
+					telegramBot.BroadcastAlert(alert.Message)
+				})
+				smartAgent.StartMonitor()
+
+				go telegramBot.Start()
+				logger.Info("✅ Smart Trading Assistant started successfully")
+				logger.Info("   📊 Real-time context injection: enabled")
+				logger.Info("   🔍 Background monitoring: enabled")
+				logger.Info("   ⚠️ Proactive alerts: enabled")
+			}
 		}
 	} else {
 		logger.Info("ℹ️ Telegram bot not configured (set TELEGRAM_BOT_TOKEN to enable)")
