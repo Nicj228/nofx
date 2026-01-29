@@ -157,6 +157,10 @@ func main() {
 			tradingTools := assistant.NewTradingTools(traderManager, st)
 			smartAgent.RegisterTools(tradingTools.GetAllTools()...)
 
+			// Register strategy tools
+			strategyTools := assistant.NewStrategyTools(st)
+			smartAgent.RegisterTools(strategyTools.GetAllTools()...)
+
 			// Create and start Telegram bot
 			var err error
 			telegramBot, err = telegram.NewBot(telegramConfig, smartAgent.Agent)
